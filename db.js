@@ -1,8 +1,9 @@
 const { Sequelize, DataTypes } = require('sequelize');
 
+// BOT_DB_PATH é o banco do bot. (DB_PATH era do antigo zcash-walletd; não reutilizar.)
 const sequelize = new Sequelize({
     dialect: 'sqlite',
-    storage: './database.sqlite', // O arquivo será salvo na sua pasta /app mapeada no Windows
+    storage: process.env.BOT_DB_PATH || './database.sqlite',
     logging: false,
 });
 
@@ -10,10 +11,10 @@ const Transaction = sequelize.define('transaction', {
     txid: {
         type: DataTypes.STRING,
         allowNull: false,
-        primaryKey: true, // Corrigido o erro de digitação
+        primaryKey: true, // chave de deduplicação: cada txid é processado uma única vez
     },
     value: {
-        type: DataTypes.BIGINT, // Protege contra valores altos de Zatoshis
+        type: DataTypes.BIGINT, // zatoshis
         allowNull: false,
     },
     height: {
@@ -21,20 +22,36 @@ const Transaction = sequelize.define('transaction', {
         allowNull: false,
     },
     memo: {
-        type: DataTypes.TEXT, // Permite os 512 bytes completos dos Memos da Zcash
+        type: DataTypes.TEXT, // até 512 bytes de memo
         allowNull: true,
+    },
+    broadcastStatus: {
+        // pending | sent | skipped | failed | legacy
+        type: DataTypes.STRING(16),
+        allowNull: false,
+        defaultValue: 'legacy', // linhas antigas, anteriores a esta coluna
     },
 });
 
-async function init() {
-    try {
-        await sequelize.authenticate();
-        // O sync() é vital! Ele verifica se a tabela existe e a cria se necessário.
-        await sequelize.sync(); 
-        console.log('Database connected and synchronized.');
-    } catch (err) {
-        console.error('Unable to connect to Database.', err);
-    }
+// Estado persistente do bot (ex.: id da conta no zkool).
+const Setting = sequelize.define('setting', {
+    key: { type: DataTypes.STRING, primaryKey: true },
+    value: { type: DataTypes.TEXT, allowNull: false },
+});
+
+async function getSetting(key) {
+    const row = await Setting.findByPk(key);
+    return row ? row.value : null;
 }
 
-module.exports = { sequelize, Transaction, init };
+async function setSetting(key, value) {
+    await Setting.upsert({ key, value: String(value) });
+}
+
+async function init() {
+    await sequelize.authenticate();
+    // alter: true adiciona colunas novas (broadcastStatus) sem apagar dados.
+    await sequelize.sync({ alter: true });
+}
+
+module.exports = { sequelize, Transaction, Setting, getSetting, setSetting, init };

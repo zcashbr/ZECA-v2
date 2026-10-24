@@ -1,5 +1,3 @@
-
-
 ---
 
 # ZECA PT/BR
@@ -10,11 +8,18 @@ Quando uma transação é detectada, a mensagem contida no seu campo de **memo c
 
 ## Como Funciona.
 
-- O ZECA se conecta à rede Zcash via [Zcash-walletd](https://github.com/james-katz/zcash-walletd) e monitora uma carteira específica em busca de transações recebidas.
-- Cada transação Shielded da Zcash pode carregar um memo criptografado de **512 bytes** (512 caracteres).
-- Após a descriptografia, o ZECA extrai o texto do memo.
-- O conteúdo do memo é então transmitido para uma ou mais plataformas conectadas.
-- Com a integração do Discord, por exemplo, as mensagens aparecem em tempo real dentro de um canal selecionado.
+- O ZECA não sincroniza a blockchain sozinho. A sincronização e a descriptografia dos memos ficam com o **[zkool-graphql](https://github.com/hhanh00/zkool2)**, um servidor de carteira Zcash separado com o qual o ZECA conversa via GraphQL.
+- Na primeira execução, o ZECA importa a **UFVK** (Unified Full Viewing Key) da sua carteira no zkool como conta somente leitura. Uma chave de visualização lê as transações recebidas, mas **não consegue gastar fundos**.
+- A cada 60 segundos o ZECA pede ao zkool que sincronize a conta. O zkool baixa os blocos de um servidor lightwalletd e descriptografa as notas com a UFVK.
+- Cada transação Shielded da Zcash pode carregar um memo criptografado de até **512 bytes**.
+- O ZECA lê o memo já descriptografado, espera o número de confirmações configurado, saneia o texto e o publica nas plataformas conectadas.
+- Com a integração do Discord, as mensagens aparecem em um canal selecionado.
+
+```
+.env (UFVK) ──► ZECA ──GraphQL──► zkool-graphql ──► lightwalletd ──► rede Zcash
+                  │
+                  └──► Discord
+```
 
 ---
 
@@ -27,122 +32,105 @@ Quando uma transação é detectada, a mensagem contida no seu campo de **memo c
 
 ---
 
-Instruções de Instalação.
+## Instruções de Instalação.
 
-OBS: Iremos precisar do Rust e do Node.js para rodar o Zeca, esta instalação será realizada em sistema Linux, podendo ser realizada em sistemas Windows com Docker. 
-Posteriormente, será necessário o uso do Discord para configuração e uso do bot. 
+**Requisitos:** Node.js 20 ou superior, um servidor zkool-graphql rodando e um bot do Discord.
 
-### Preparação do Ambiente (Recomendo criar uma nova pasta para armazenar todo o projeto).
+### 1. Suba o zkool-graphql
 
----
+O zkool-graphql é distribuído como a imagem Docker `hhanh00/zkool-graphql`. Siga a documentação do zkool para configurar o servidor lightwalletd e o volume de dados. Fixe uma versão específica em vez de `latest`.
 
-### Instalando o Rust.
-
-O Rust é necessário para compilar os componentes de baixo nível presentes na Zcash-walletd.
-
-- No Linux, basta rodar:
-    
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
-    
-
----
-
-### Instalando o NVM e Node.js.
-
-Recomendamos o uso do **nvm** (Node Version Manager) para gerenciar o Node.js.
-
-- Linux
-    
-```bash
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
-```
-    
-
-(Reinicie o terminal após a instalação).
-
-**Instale o Node.js LTS:**
+**Regra de segurança:** a API do zkool não tem autenticação. Quem alcança a porta lê os memos e transações de todas as contas. Publique a porta só no loopback:
 
 ```bash
-nvm install --lts
+# correto: só a própria máquina acessa a API
+-p 127.0.0.1:8000:8000
+
+# errado: expõe a API para a rede
+-p 8000:8000
 ```
 
-```bash
-nvm use --lts
-```
+Se o ZECA e o zkool estiverem em máquinas diferentes, coloque um proxy reverso HTTPS com token na frente do zkool. O ZECA recusa URLs `http://` fora de localhost, a menos que `ALLOW_INSECURE_GQL=true`.
 
----
+### 2. Instale o bot
 
-### Compilação e Configuração (Build) - (Dentro da nova pasta que foi criada para o projeto).
-
-1. Clone o backend da carteira Zcash:
-    
-```bash
-git clone https://github.com/james-katz/zcash-walletd
-```
-    
-2. Instale o nj-cli (etapa única):
-    
-```bash
-cargo install nj-cli
-```
-    
-3. **Entre na pasta da Zcash-walletd e faça o build com o nj-cli.**
-    
-```bash
-cd zcash-walletd/js
-```
-    
-```bash
-nj-cli build --release
-```
-    
-4. **Retorne para a pasta do projeto e clone o repositório do ZECA.**
-    
-```bash
-cd ../..
-```
-    
 ```bash
 git clone https://github.com/Paow4n/ZECA-v2.git
-```
-    
-```bash
 cd ZECA-v2
-```
-    
-5. Copie os arquivos compilados para a raiz do ZECA.
-    
-```bash
-cp -r ../zcash-walletd/js/dist ./dist
-```
-    
-6. Configure as variáveis de ambiente:
-    
-```bash
+npm ci        # ou "npm install" se ainda não houver package-lock.json
 cp sample.env .env
 ```
-    
-Edite o arquivo .env com suas credenciais e chaves. (O token do BOT você consegue pegar em [Discord developers](https://discord.com/developers/applications) o Channel ID você consegue pegar no próprio discord, será necessário entrar nas configurações e ativar modo desenvolvedor. A chave de visualização da carteira da Zcash, você consegue através da Zashi por este Tutorial de obtenção de UFVK.) 
-    
-7. **Instale as dependências e prepare o banco de dados.**
-    
-```bash
-npm install
-```
-    
-```bash
-node sync_db.js
-```
-    
-8. Inicie o bot:
-    
-```bash
-node index.js
-```
-    
 
-Após esse passo a passo, caso tenha configurado o .env corretamente e inserido o bot em um servidor que você possua privilégios de administrador, quando você rodar o comando `node index.js` no terminal, irá surgir informações na tela de Sync e o Bot ficará online, a partir do momento que o bot estiver Online, pode usar o comando `/address` para receber o QRCode com o endereço da carteira que configuramos na UFVK. 
+### 3. Configure o `.env`
 
-O UFVK é uma informação sigilosa da sua carteira Zcash, ela não estará sendo exibida no bot, o bot irá exibir um endereço shielded da sua UFVK, qualquer valor transferido para esse endereço, irá para a sua carteira e as informações serão exibidas no Bot. Recomendo que configure uma carteira nova para utilizar no Bot e não utilize a sua carteira pessoal.
+| Variável | O que colocar |
+|---|---|
+| `DISCORD_BOT_TOKEN` | Token do bot, obtido em [Discord Developers](https://discord.com/developers/applications) |
+| `DISCORD_CHANNEL_ID` | ID do canal (ative o Modo Desenvolvedor nas configurações do Discord e clique com o botão direito no canal) |
+| `GQL_URL` | Endereço do zkool-graphql. Padrão: `http://127.0.0.1:8000/graphql` |
+| `VK` | UFVK da sua carteira (começa com `uview1`). Pode ser exportada pela Zashi |
+| `BIRTH_HEIGHT` | Altura do bloco em que a carteira foi criada |
+| `ZKOOL_ACCOUNT_ID` | Deixe vazio numa instalação nova (veja abaixo) |
+| `CONFIRMATIONS` | Confirmações antes de publicar. Padrão: `6` |
+| `MIN_VALUE_ZAT` | Valor mínimo em zatoshis para publicar um memo (anti-spam). `10000` = 0,0001 ZEC |
+| `MAX_POSTS_PER_CYCLE` | Máximo de memos publicados por ciclo (anti-flood) |
+| `STRIP_ADDRESSES_FROM_MEMO` | `true` remove endereços Zcash colados no memo, protegendo o remetente |
+| `DEFAULT_SHOW_VALUE` | `true` mostra o valor na mensagem, `false` oculta |
+
+**Nunca coloque seed ou chave de gasto em `VK`.** Use uma carteira nova, dedicada ao bot, e não a sua carteira pessoal.
+
+### 4. Inicie
+
+```bash
+npm start
+```
+
+O banco local é criado automaticamente na primeira execução. Procure estas linhas no log:
+
+```
+Conta UFVK importada no zkool (id N).
+[DISCORD] Engine pronto.
+```
+
+### 5. Configuração do Discord
+
+No Developer Portal, abra a sua aplicação, vá em **Bot** e deixe a **Message Content Intent desligada**. O ZECA não lê mensagens.
+
+Adicione o bot a um servidor em que você tenha privilégios de administrador. Com o bot online, use `/address` para receber o QR Code do endereço shielded derivado da sua UFVK.
+
+---
+
+## Usando um zkool-graphql compartilhado com outro serviço.
+
+O zkool é multi-conta, então o ZECA pode dividir o servidor com outro serviço. Duas regras:
+
+- **Deixe `ZKOOL_ACCOUNT_ID` vazio na primeira execução.** O ZECA importa a UFVK, recebe o id da conta nova e o guarda no banco local. Confira no log que o id não é o da conta do outro serviço. Colocar `ZKOOL_ACCOUNT_ID=1` num servidor compartilhado pode fazer o ZECA ler a carteira do outro serviço e publicar os memos dela.
+- **Não compartilhe uma instância que guarde seed ou chave de gasto.** A API do zkool não isola contas. O ZECA processa conteúdo de remetentes anônimos; se ele for comprometido, o atacante ganha acesso a tudo que está naquele zkool. Nesse caso, suba uma segunda instância em outra porta (por exemplo `-p 127.0.0.1:8001:8000`), com volume de dados próprio, e aponte o `GQL_URL` para ela.
+
+---
+
+## Atualizando uma instalação existente.
+
+1. Faça backup do `database.sqlite`. Ele registra quais transações já foram publicadas.
+2. No `.env`, defina `ZKOOL_ACCOUNT_ID` com o id da conta que já existe no zkool (normalmente `1`, quando o ZECA era o único usuário do servidor).
+3. Rode `npm start`. As colunas novas são adicionadas sem apagar dados.
+
+## Resetando o banco.
+
+`node sync_db.js` só verifica e cria as tabelas que faltam. O reset completo apaga o histórico, e **o bot vai republicar todos os memos antigos**:
+
+```bash
+CONFIRM_DB_RESET=yes node sync_db.js --force
+```
+
+No PowerShell:
+
+```powershell
+$env:CONFIRM_DB_RESET="yes"; node sync_db.js --force
+```
+
+---
+
+**Importante:** A UFVK é uma informação sigilosa da sua carteira Zcash. Ela revela todas as transações recebidas, valores e memos, por isso nunca é exibida pelo bot nem gravada no log. O bot exibe um endereço shielded derivado da sua UFVK. Qualquer valor transferido para esse endereço vai para a sua carteira, e o memo é exibido pelo bot. Recomendamos configurar uma carteira nova para o bot e **não usar a sua carteira pessoal**.
+
+---

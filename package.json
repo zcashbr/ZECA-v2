@@ -1,9 +1,15 @@
 {
   "name": "zecanony",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Privacy-focused discord bot using the Zcash ecosystem",
   "main": "index.js",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
+    "start": "node index.js",
+    "db:check": "node sync_db.js",
+    "audit": "npm audit --omit=dev",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {

@@ -1,155 +1,209 @@
-const fs = require('fs');
+// Carrega o .env antes de qualquer outro módulo que leia process.env.
+require('dotenv').config({ quiet: true });
+
+const log = require('./lib/logger');
+const { registerSecret, sanitizeMemo, assertSafeEndpoint } = require('./lib/security');
 const DiscordEngine = require('./engines/discord.engine');
-const { Transaction, init } = require('./db');
+const { sequelize, Transaction, getSetting, setSetting, init } = require('./db');
 const { ZkoolClient } = require('./zkool.client');
 
-require('dotenv').config();
+// ---------- Configuração ----------
+const int = (v, d) => (Number.isFinite(parseInt(v, 10)) ? parseInt(v, 10) : d);
 
-// Configurações .env
-const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL) || 60;
-const GQL_URL = process.env.GQL_URL || 'http://127.0.0.1:8000/graphql';
-const VK = process.env.VK;
-const BIRTH_HEIGHT = parseInt(process.env.BIRTH_HEIGHT) || 0;
-const SHOW_VALUE = process.env.DEFAULT_SHOW_VALUE === 'true';
+const cfg = {
+    pollInterval: Math.max(int(process.env.POLL_INTERVAL, 60), 15),
+    gqlUrl: process.env.GQL_URL || 'http://127.0.0.1:8000/graphql',
+    gqlToken: process.env.GQL_AUTH_TOKEN || undefined,
+    allowInsecureGql: process.env.ALLOW_INSECURE_GQL === 'true',
+    vk: process.env.VK,
+    birthHeight: int(process.env.BIRTH_HEIGHT, 0),
+    accountIdOverride: int(process.env.ZKOOL_ACCOUNT_ID, null),
+    confirmations: Math.max(int(process.env.CONFIRMATIONS, 6), 1),
+    minValueZat: Math.max(int(process.env.MIN_VALUE_ZAT, 0), 0),
+    showValue: process.env.DEFAULT_SHOW_VALUE === 'true',
+    stripAddresses: process.env.STRIP_ADDRESSES_FROM_MEMO !== 'false',
+    maxPostsPerCycle: Math.max(int(process.env.MAX_POSTS_PER_CYCLE, 10), 1),
+};
 
-// Inicialização dos Engines (Discord)
+registerSecret(cfg.vk);
+registerSecret(process.env.DISCORD_BOT_TOKEN);
+registerSecret(cfg.gqlToken);
+
 const engines = [
     new DiscordEngine({
         token: process.env.DISCORD_BOT_TOKEN,
         channelId: process.env.DISCORD_CHANNEL_ID,
+        showValue: cfg.showValue,
     }),
 ];
 
-// Função auxiliar para logs
-function writeLog(message) {
-    const timestamp = new Date().toLocaleString();
-    const logEntry = `[${timestamp}] ${message}\n`;
-    fs.appendFileSync('bot.log', logEntry);
-    console.log(message);
+let zkool;
+let pollTimer;
+
+// ---------- Engines ----------
+async function startAll(ua) {
+    const results = await Promise.allSettled(engines.map(e => e.start(ua)));
+    results.forEach((r, i) => {
+        if (r.status === 'rejected') log.error(`[ENGINE] ${engines[i].constructor.name} falhou ao iniciar: ${r.reason?.message}`);
+    });
+    if (results.every(r => r.status === 'rejected')) throw new Error('Nenhum engine de publicação iniciou.');
 }
 
-async function startAll(ua) {
-    for (const e of engines) {
-        try {
-            await e.start(ua);
-        } catch (err) {
-            writeLog(`[ENGINE ERROR] Falha ao inicializar engine: ${err.message}`);
+/** @returns {Promise<boolean>} true se ao menos um engine publicou */
+async function broadcast(message, value, txid) {
+    const results = await Promise.allSettled(engines.map(e => e.post(message, value, txid)));
+    results.forEach((r, i) => {
+        if (r.status === 'rejected') log.error(`[BROADCAST] ${engines[i].constructor.name} falhou em ${txid}: ${r.reason?.message}`);
+    });
+    return results.some(r => r.status === 'fulfilled');
+}
+
+// ---------- Conta no zkool ----------
+async function resolveAccountId() {
+    // 1) override explícito (instalações existentes: normalmente 1)
+    if (cfg.accountIdOverride) return cfg.accountIdOverride;
+
+    // 2) id já persistido pelo bot
+    const saved = int(await getSetting('zkoolAccountId'), null);
+    if (saved) return saved;
+
+    // 3) primeira execução: importa a UFVK e guarda o id devolvido
+    const id = await zkool.createNewAccount(cfg.vk, 0, cfg.birthHeight, 'ZecaMonitor');
+    if (!id) {
+        throw new Error('createAccount não retornou um id. Defina ZKOOL_ACCOUNT_ID no .env com o id da conta no zkool.');
+    }
+    await setSetting('zkoolAccountId', id);
+    log.info(`Conta UFVK importada no zkool (id ${id}).`);
+    return id;
+}
+
+// ---------- Memo ----------
+function extractMemo(details) {
+    // Uma tx pode ter várias notas; o memo pode não estar na primeira.
+    const notes = Array.isArray(details?.notes) ? details.notes : [];
+    for (const n of notes) {
+        const memo = sanitizeMemo(n?.memo, { stripAddresses: cfg.stripAddresses });
+        if (memo) return memo;
+    }
+    return null;
+}
+
+// ---------- Ciclo principal ----------
+let isProcessing = false;
+
+async function pollOnce() {
+    if (isProcessing) return;
+    isProcessing = true;
+    try {
+        const [txs, serverHeight] = await Promise.all([zkool.getTransactions(), zkool.getServerHeight()]);
+        if (!txs.length) return;
+
+        // Só transações recebidas, minadas e com confirmações suficientes.
+        const candidates = txs.filter(tx => {
+            const h = Number(tx.height);
+            return Number(tx.value) > 0 && h > 0 && serverHeight - h + 1 >= cfg.confirmations;
+        });
+        if (!candidates.length) return;
+
+        // Deduplicação por txid (não por altura: várias tx podem estar no mesmo bloco).
+        const known = new Set(
+            (await Transaction.findAll({
+                attributes: ['txid'],
+                where: { txid: candidates.map(t => t.txid) },
+                raw: true,
+            })).map(r => r.txid)
+        );
+        const fresh = candidates
+            .filter(t => !known.has(t.txid))
+            .sort((a, b) => Number(a.height) - Number(b.height))
+            .slice(0, cfg.maxPostsPerCycle); // limita rajadas (anti-flood)
+
+        if (!fresh.length) return;
+        log.info(`[SYNC] ${fresh.length} transação(ões) nova(s) confirmada(s).`);
+
+        for (const tx of fresh) {
+            const value = Number(tx.value) || 0;
+            const details = await zkool.getTransactionInfo(zkool.accountId, tx.txid);
+            const memo = extractMemo(details);
+
+            const row = await Transaction.create({
+                txid: tx.txid,
+                value,
+                height: Number(tx.height),
+                memo,
+                broadcastStatus: 'pending',
+            });
+
+            if (!memo || value < cfg.minValueZat) {
+                await row.update({ broadcastStatus: 'skipped' });
+                continue;
+            }
+
+            const ok = await broadcast(memo, value, tx.txid);
+            await row.update({ broadcastStatus: ok ? 'sent' : 'failed' });
+            if (ok) log.info(`[BROADCAST] Publicado: ${tx.txid}`);
         }
+    } catch (err) {
+        log.error(`[POLL] Falha na varredura: ${err.message}`);
+    } finally {
+        isProcessing = false;
     }
 }
 
-async function broadcast(message, value, txid) {
-    await Promise.allSettled(engines.map(e => e.post(message, value, txid)));
+// ---------- Encerramento ----------
+async function shutdown(signal) {
+    log.info(`Recebido ${signal}. Encerrando...`);
+    clearInterval(pollTimer);
+    zkool?.stop();
+    await Promise.allSettled(engines.map(e => e.stop?.()));
+    await sequelize.close().catch(() => {});
+    process.exit(0);
 }
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('unhandledRejection', (r) => log.error(`[UNHANDLED] ${r?.message || r}`));
 
-// APP Entrypoint
+// ---------- Entrypoint ----------
 (async () => {
     try {
-        writeLog("--- Iniciando ZECA BOT ---");
+        log.info('--- Iniciando ZECA BOT ---');
 
-        // Inicializa o banco de dados local
-        await init();
-
-        if (!VK) throw new Error("A variável VK (UFVK) não foi definida no .env!");
-
-        // Instancia o Client do Zkool
-        const zkool = new ZkoolClient(GQL_URL);
-
-        // O init() faz o ping na API e já liga o sincronizador no background!
-        await zkool.init();
-        writeLog("[INFO] Motor ZkoolClient inicializado. Sincronização em background ativada.");
-
-        try {
-            // Tenta criar a conta. Se já existir (erro), ele segue o baile.
-            await zkool.createNewAccount(VK, 0, BIRTH_HEIGHT, "ZecaMonitor");
-            writeLog("[INFO] Conta UFVK configurada com sucesso.");
-        } catch (err) {
-            writeLog(`[INFO] Conta já existente no banco de dados da API.`);
+        if (!cfg.vk) throw new Error('VK (UFVK) não definida no .env.');
+        if (!/^uview(test|regtest)?1/i.test(cfg.vk)) {
+            log.warn('VK não parece uma UFVK (prefixo uview1). Confira se não é uma chave de gasto.');
         }
+        assertSafeEndpoint(cfg.gqlUrl, cfg.allowInsecureGql);
 
-        zkool.accountId = 1;
+        await init();
+        log.info('Banco de dados local pronto.');
 
-        // Pega o endereço de forma limpa usando o SDK
+        zkool = new ZkoolClient(cfg.gqlUrl, { authToken: cfg.gqlToken, logger: log });
+        await zkool.init();
+
+        zkool.accountId = await resolveAccountId();
+        zkool.spawnSyncTask();
+
         const addressData = await zkool.getAddress();
-        let ua = addressData?.ua; 
-        if (!ua) throw new Error("Nenhum endereço retornado pelo Zkool.");
+        const ua = addressData?.ua;
+        if (!ua) throw new Error('Nenhum endereço retornado pelo zkool.');
+        log.info(`Endereço UA: ${ua.substring(0, 10)}...`);
 
-        writeLog(`[INFO] Endereço UA detectado: ${ua.substring(0, 10)}...`);
-
-        // Inicializa o Discord
         await startAll(ua);
 
         try {
             const serverHeight = await zkool.getServerHeight();
             const accHeight = await zkool.getWalletHeight();
             const faltam = serverHeight - accHeight;
-            const progresso = ((accHeight / serverHeight) * 100).toFixed(2);
-
-            writeLog(`[SYNC STATUS] Carteira: ${accHeight} | Rede: ${serverHeight}`);
-            writeLog(`[SYNC STATUS] Progresso: ${progresso}% | Faltam: ${faltam} blocos.`);
-            
-            if (faltam > 100) {
-                writeLog("[!] Aviso: O bot ainda está longe do topo da rede. Transações recentes podem demorar a aparecer.");
-            }
-        } catch (syncErr) {
-            writeLog(`[WARN] Não foi possível ler o progresso de sincronização: ${syncErr.message}`);
+            log.info(`[SYNC STATUS] Carteira ${accHeight} | Rede ${serverHeight} | Faltam ${faltam} blocos`);
+            if (faltam > 100) log.warn('Carteira longe do topo da rede; memos recentes vão demorar a aparecer.');
+        } catch (err) {
+            log.warn(`Não foi possível ler o progresso do sync: ${err.message}`);
         }
 
-        let isProcessing = false;
-
-        // Ciclo principal de monitoramento e postagem
-        setInterval(async () => {
-            if (isProcessing) return;
-            isProcessing = true;
-
-            try {
-                // Pega a lista simplificada de transações
-                const txs = await zkool.getTransactions();
-                if (!txs || txs.length === 0) return;
-
-                const latestDbHeight = await Transaction.max('height') || 0;
-                
-                // Filtra para manter apenas o que é novidade para o nosso banco de dados
-                const newTxns = txs.filter(tx => tx.height > latestDbHeight);
-
-                if (newTxns.length === 0) return;
-
-                writeLog(`[SYNC] ${newTxns.length} novas transações confirmadas prontas para leitura.`);
-
-                // Processa cada transação nova para buscar a mensagem (memo)
-                for (const tx of newTxns) {
-                    const details = await zkool.getTransactionInfo(zkool.accountId, tx.txid);
-                    
-                    let txMemo = null;
-                    if (details && details.notes && details.notes.length > 0 && details.notes[0].memo) {
-                        txMemo = details.notes[0].memo;
-                    }
-
-                    // Salva no banco de dados local do Bot
-                    await Transaction.create({
-                        txid: tx.txid,
-                        value: Number(tx.value) || 0,
-                        height: Number(tx.height),
-                        memo: txMemo
-                    });
-
-                    // Envia para o Discord (Broadcast) apenas se tiver mensagem válida
-                    if (txMemo && String(txMemo).trim().length > 0) {
-                        const valueToPost = SHOW_VALUE ? tx.value : "Oculto";
-                        await broadcast(txMemo, valueToPost, tx.txid);
-                        writeLog(`[BROADCAST] TXID postado no Discord: ${tx.txid}`);
-                    }
-                }
-
-            } catch (innerErr) {
-                writeLog(`[ERROR] Falha na varredura de transações: ${innerErr.message}`);
-            } finally {
-                isProcessing = false;
-            }
-        }, POLL_INTERVAL * 1000);
-
+        pollTimer = setInterval(pollOnce, cfg.pollInterval * 1000);
+        pollOnce();
     } catch (err) {
-        writeLog(`[FATAL ERROR] Erro crítico no startup: ${err.message}`);
+        log.fatal(`Erro crítico no startup: ${err.message}`);
         process.exit(1);
     }
 })();
