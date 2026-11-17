@@ -9,7 +9,7 @@ isolamento.
 
 | O quê | Onde | Dono | Observação |
 |---|---|---|---|
-| zkool do ZECA | `zkool-zeca.service`, `127.0.0.1:8001` | `zkool-zeca` | Banco cifrado em `/var/lib/zkool-zeca` |
+| zkool do ZECA | `zkool-zeca.service`, `127.0.0.1:8100` | `zkool-zeca` | Banco cifrado em `/var/lib/zkool-zeca` |
 | Senha do banco do zkool | `/etc/zkool-zeca/db-password` | root, 600 | Entregue ao serviço por `LoadCredential` |
 | Binário do zkool | `/usr/local/bin/zkool_graphql` → `/usr/local/lib/zkool/zkool_graphql-<versão>` | root | Mesmo link do zkool do LiveZEC |
 | Bot | `zeca.service` | `zeca` | Sem acesso à home dos outros usuários |
@@ -112,6 +112,6 @@ sudo systemd-analyze security zeca zkool-zeca     # nota de exposição dos serv
 |---|---|
 | `A conta N salva no banco do bot não existe…` | Seção "Trocar de zkool" |
 | `ZKOOL_ACCOUNT_ID=N não existe…` | Corrija ou esvazie `ZKOOL_ACCOUNT_ID` em `/etc/zeca/zeca.env` |
-| `[zkool] timeout` | `systemctl status zkool-zeca`; o zkool está no ar e na porta 8001? |
+| `[zkool] timeout` | `systemctl status zkool-zeca`; o zkool está no ar e na porta 8100? |
 | `status=31/SYS` no `systemctl status zeca` | Uma chamada de sistema foi bloqueada por `SystemCallFilter`: comente a linha em `zeca.service`, `daemon-reload`, e avise para ajustarmos |
 | `EACCES` em `/var/lib/zeca` ou `/var/log/zeca` | Os arquivos migrados precisam ser do usuário `zeca` (`chown zeca:zeca`) |

@@ -1,5 +1,7 @@
 # /etc/systemd/system/zkool-zeca.service
-# Zkool exclusivo do ZECA (porta 8001), separado do zkool do LiveZEC (8000).
+# Zkool exclusivo do ZECA (porta 8100), separado do zkool do LiveZEC (8000).
+# Antes de instalar, confira que a porta está livre: ss -ltn | grep ':8100'
+# (8001 costuma estar ocupada por outros serviços, como o GlitchTip em Docker).
 #
 # Por que separar: a API do zkool não isola contas. O ZECA processa memos de
 # remetentes anônimos; se for comprometido, não pode alcançar as viewing keys
@@ -24,7 +26,7 @@ StateDirectoryMode=0700
 WorkingDirectory=/var/lib/zkool-zeca
 Environment=HOME=/var/lib/zkool-zeca
 LoadCredential=db-password:/etc/zkool-zeca/db-password
-ExecStart=/usr/local/bin/zkool_graphql --bind-address 127.0.0.1 --port 8001 --db-path /var/lib/zkool-zeca/zkool.db --db-password-file %d/db-password --allow-unauthenticated
+ExecStart=/usr/local/bin/zkool_graphql --bind-address 127.0.0.1 --port 8100 --db-path /var/lib/zkool-zeca/zkool.db --db-password-file %d/db-password --allow-unauthenticated
 Restart=always
 RestartSec=5s
 TimeoutStopSec=20s

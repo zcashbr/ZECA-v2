@@ -40,7 +40,7 @@ Cuando se detecta una transacción, el mensaje contenido en su campo de **memo c
 
 zkool-graphql se distribuye como la imagen Docker `hhanh00/zkool-graphql`. Siga la documentación de zkool para configurar el servidor lightwalletd y el volumen de datos. Fije una versión específica en lugar de `latest`.
 
-Sin Docker: cada release de [zkool2](https://github.com/hhanh00/zkool2/releases) incluye el binario `zkool_graphql` (Linux x86_64). Compruebe el SHA-256 que GitHub muestra en la release antes de usarlo. `deploy/zkool-zeca.service` ejecuta ese binario con usuario propio, base de datos cifrada y puerto `8001` (vea `deploy/DEPLOY.md`). Use la 6.38.0-rc.2 o posterior: corrige cuentas que volvían a su altura de nacimiento en cada reorg ([#1653](https://github.com/hhanh00/zkool2/issues/1653)) y llamadas a lightwalletd que bloqueaban el sync ([#1654](https://github.com/hhanh00/zkool2/issues/1654)).
+Sin Docker: cada release de [zkool2](https://github.com/hhanh00/zkool2/releases) incluye el binario `zkool_graphql` (Linux x86_64). Compruebe el SHA-256 que GitHub muestra en la release antes de usarlo. `deploy/zkool-zeca.service` ejecuta ese binario con usuario propio, base de datos cifrada y puerto `8100` (vea `deploy/DEPLOY.md`). Use la 6.38.0-rc.2 o posterior: corrige cuentas que volvían a su altura de nacimiento en cada reorg ([#1653](https://github.com/hhanh00/zkool2/issues/1653)) y llamadas a lightwalletd que bloqueaban el sync ([#1654](https://github.com/hhanh00/zkool2/issues/1654)).
 
 **Regla de seguridad:** la API de zkool no tiene autenticación. Quien alcance su puerto puede leer los memos y transacciones de todas las cuentas. Publique el puerto solo en la interfaz loopback:
 
@@ -115,7 +115,7 @@ Añada el bot a un servidor donde tenga privilegios de administrador. Con el bot
 
 La carpeta `deploy/` instala ZECA con systemd, aislado del resto de la máquina:
 
-- un zkool solo para ZECA (`zkool-zeca.service`), con usuario propio, base de datos cifrada y puerto `8001`;
+- un zkool solo para ZECA (`zkool-zeca.service`), con usuario propio, base de datos cifrada y puerto `8100`;
 - el bot (`zeca.service`) con usuario propio, código en `/opt/zeca` que no puede modificar, y secretos en `/etc/zeca/zeca.env`, leídos por systemd;
 - `deploy/deploy.sh` instala un commit en `/opt/zeca`.
 
@@ -130,7 +130,7 @@ El paso a paso, la actualización del código, de Node y de zkool, y la solució
 zkool admite múltiples cuentas, así que ZECA puede compartir el servidor con otro servicio. Se aplican dos reglas:
 
 * **Deje `ZKOOL_ACCOUNT_ID` vacío en la primera ejecución.** ZECA importa la UFVK, recibe el id de la cuenta nueva y lo guarda en su base local. Compruebe en el log que el id no es el de la cuenta del otro servicio. Poner `ZKOOL_ACCOUNT_ID=1` en un servidor compartido puede hacer que ZECA lea la billetera del otro servicio y publique sus memos.
-* **No comparta una instancia que guarde una frase semilla o clave de gasto.** La API de zkool no aísla las cuentas. ZECA procesa contenido de remitentes anónimos; si se ve comprometido, el atacante obtiene acceso a todo lo que hay en ese zkool. En ese caso, inicie una segunda instancia en otro puerto (por ejemplo `-p 127.0.0.1:8001:8000`) con su propio volumen de datos y apunte `GQL_URL` a ella.
+* **No comparta una instancia que guarde una frase semilla o clave de gasto.** La API de zkool no aísla las cuentas. ZECA procesa contenido de remitentes anónimos; si se ve comprometido, el atacante obtiene acceso a todo lo que hay en ese zkool. En ese caso, inicie una segunda instancia en otro puerto (por ejemplo `-p 127.0.0.1:8100:8000`) con su propio volumen de datos y apunte `GQL_URL` a ella.
 
 El id de la cuenta solo vale para el zkool donde se creó. Si el id guardado (o el de `ZKOOL_ACCOUNT_ID`) no existe en el zkool de `GQL_URL`, el bot se detiene con un mensaje claro en lugar de importar la UFVK de nuevo. Para cambiar de zkool, vea "Trocar de zkool" en `deploy/DEPLOY.md`.
 
