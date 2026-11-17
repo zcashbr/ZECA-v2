@@ -37,11 +37,13 @@ When a transaction is detected, the message contained within its **encrypted mem
 
 ## Installation Instructions.
 
-**Requirements:** Node.js 20 or later, a running zkool-graphql server, and a Discord bot.
+**Requirements:** Node.js 22 or 24 (supported LTS releases; Node 20 reached end of life in April 2026), a running zkool-graphql server, and a Discord bot.
 
 ### 1. Run zkool-graphql
 
 zkool-graphql is distributed as the Docker image `hhanh00/zkool-graphql`. Follow the zkool documentation to configure the lightwalletd server and the data volume. Pin a specific version tag instead of `latest`.
+
+Without Docker: every [zkool2](https://github.com/hhanh00/zkool2/releases) release ships the `zkool_graphql` binary (Linux x86_64). Check the SHA-256 that GitHub shows on the release before using it. `deploy/zkool-zeca.service` runs that binary with its own user, an encrypted database and port `8001` (see `deploy/DEPLOY.md`). Use 6.38.0-rc.2 or later: it fixes accounts going back to their birth height on every reorg ([#1653](https://github.com/hhanh00/zkool2/issues/1653)) and lightwalletd calls that hung the sync ([#1654](https://github.com/hhanh00/zkool2/issues/1654)).
 
 **Security rule:** the zkool API has no authentication. Anyone who can reach its port can read every account's memos and transactions. Publish the port on the loopback interface only:
 
@@ -74,6 +76,7 @@ cp sample.env .env
 | `VK` | Your wallet's UFVK (starts with `uview1`). You can export it from Zashi |
 | `BIRTH_HEIGHT` | Block height when the wallet was created |
 | `ZKOOL_ACCOUNT_ID` | Leave empty on a new install (see below) |
+| `GQL_TIMEOUT_MS` / `GQL_SYNC_TIMEOUT_MS` | Timeout for zkool queries and for the sync, in ms. Default: `30000` and `120000`. A stuck zkool becomes an error and a retry, not a stuck bot |
 | `CONFIRMATIONS` | Confirmations before publishing. Default: `6` |
 | `MIN_VALUE_ZAT` | Minimum value in zatoshis to publish a memo (anti-spam). `10000` = 0.0001 ZEC |
 | `MAX_POSTS_PER_CYCLE` | Maximum memos published per cycle (anti-flood) |
@@ -84,6 +87,14 @@ cp sample.env .env
 
 ### 4. Start
 
+Before the first start, run the preflight. It imports the UFVK, syncs to the chain tip and lists what the bot will publish (height, date, amount and whether there is a memo), **without publishing anything**:
+
+```bash
+node scripts/preflight.js
+```
+
+Then start the bot:
+
 ```bash
 npm start
 ```
@@ -91,7 +102,7 @@ npm start
 The local database is created automatically on first start. Look for these lines in the log:
 
 ```
-Conta UFVK importada no zkool (id N).
+Conta UFVK importada no zkool (id N, nascimento B).
 [DISCORD] Engine pronto.
 ```
 
@@ -103,12 +114,28 @@ Add the bot to a server where you have administrator rights. Once it is online, 
 
 ---
 
+## Production on a VPS (recommended).
+
+The `deploy/` folder installs ZECA with systemd, isolated from the rest of the machine:
+
+- a zkool used only by ZECA (`zkool-zeca.service`), with its own user, an encrypted database and port `8001`;
+- the bot (`zeca.service`) with its own user, code in `/opt/zeca` that it cannot modify, and secrets in `/etc/zeca/zeca.env`, read by systemd;
+- `deploy/deploy.sh` installs a commit into `/opt/zeca`.
+
+Step-by-step setup, updating the code, Node and zkool, and troubleshooting are in [`deploy/DEPLOY.md`](deploy/DEPLOY.md) (Portuguese).
+
+---
+
 ## Using a zkool-graphql instance shared with another service.
+
+**Recommended: do not share.** A zkool used only by ZECA (section above) avoids both risks below.
 
 zkool supports multiple accounts, so ZECA can share a server with another service. Two rules apply:
 
 * **Leave `ZKOOL_ACCOUNT_ID` empty on the first start.** ZECA imports the UFVK, receives the new account id and stores it in its local database. Check that the id in the log is not the other service's account. Setting `ZKOOL_ACCOUNT_ID=1` on a shared server may point ZECA at the other service's wallet and publish its memos.
 * **Do not share an instance that holds a seed or spending key.** The zkool API does not isolate accounts. ZECA processes content from anonymous senders, so if it is compromised, the attacker gets access to everything in that zkool. In that case, run a second instance on another port (for example `-p 127.0.0.1:8001:8000`) with its own data volume, and point `GQL_URL` to it.
+
+An account id is only valid for the zkool where it was created. If the saved id (or `ZKOOL_ACCOUNT_ID`) does not exist in the zkool at `GQL_URL`, the bot stops with a clear message instead of importing the UFVK again. To move to another zkool, see "Trocar de zkool" in `deploy/DEPLOY.md`.
 
 ---
 

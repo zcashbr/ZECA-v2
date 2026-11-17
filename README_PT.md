@@ -34,11 +34,13 @@ Quando uma transação é detectada, a mensagem contida no seu campo de **memo c
 
 ## Instruções de Instalação.
 
-**Requisitos:** Node.js 20 ou superior, um servidor zkool-graphql rodando e um bot do Discord.
+**Requisitos:** Node.js 22 ou 24 (versões LTS com suporte; o Node 20 saiu de suporte em abril de 2026), um servidor zkool-graphql rodando e um bot do Discord.
 
 ### 1. Suba o zkool-graphql
 
 O zkool-graphql é distribuído como a imagem Docker `hhanh00/zkool-graphql`. Siga a documentação do zkool para configurar o servidor lightwalletd e o volume de dados. Fixe uma versão específica em vez de `latest`.
+
+Sem Docker: cada release do [zkool2](https://github.com/hhanh00/zkool2/releases) traz o binário `zkool_graphql` (Linux x86_64). Confira o SHA-256 que o GitHub mostra na release antes de usar. O arquivo `deploy/zkool-zeca.service` roda esse binário com usuário próprio, banco cifrado e porta `8001` (veja `deploy/DEPLOY.md`). Use a 6.38.0-rc.2 ou mais nova: ela corrige contas voltando ao bloco de nascimento a cada reorg ([#1653](https://github.com/hhanh00/zkool2/issues/1653)) e chamadas ao lightwalletd que travavam o sync ([#1654](https://github.com/hhanh00/zkool2/issues/1654)).
 
 **Regra de segurança:** a API do zkool não tem autenticação. Quem alcança a porta lê os memos e transações de todas as contas. Publique a porta só no loopback:
 
@@ -71,6 +73,7 @@ cp sample.env .env
 | `VK` | UFVK da sua carteira (começa com `uview1`). Pode ser exportada pela Zashi |
 | `BIRTH_HEIGHT` | Altura do bloco em que a carteira foi criada |
 | `ZKOOL_ACCOUNT_ID` | Deixe vazio numa instalação nova (veja abaixo) |
+| `GQL_TIMEOUT_MS` / `GQL_SYNC_TIMEOUT_MS` | Prazo das consultas e do sync no zkool, em ms. Padrão: `30000` e `120000`. Um zkool travado vira erro e nova tentativa, não um bot parado |
 | `CONFIRMATIONS` | Confirmações antes de publicar. Padrão: `6` |
 | `MIN_VALUE_ZAT` | Valor mínimo em zatoshis para publicar um memo (anti-spam). `10000` = 0,0001 ZEC |
 | `MAX_POSTS_PER_CYCLE` | Máximo de memos publicados por ciclo (anti-flood) |
@@ -81,6 +84,14 @@ cp sample.env .env
 
 ### 4. Inicie
 
+Antes da primeira execução, rode o pré-voo. Ele importa a UFVK, sincroniza até o topo da rede e lista o que o bot vai publicar (altura, data, valor e se há memo), **sem publicar nada**:
+
+```bash
+node scripts/preflight.js
+```
+
+Depois, ligue o bot:
+
 ```bash
 npm start
 ```
@@ -88,7 +99,7 @@ npm start
 O banco local é criado automaticamente na primeira execução. Procure estas linhas no log:
 
 ```
-Conta UFVK importada no zkool (id N).
+Conta UFVK importada no zkool (id N, nascimento B).
 [DISCORD] Engine pronto.
 ```
 
@@ -100,12 +111,28 @@ Adicione o bot a um servidor em que você tenha privilégios de administrador. C
 
 ---
 
+## Produção numa VPS (recomendado).
+
+A pasta `deploy/` instala o ZECA com systemd, isolado do resto da máquina:
+
+- um zkool só do ZECA (`zkool-zeca.service`), com usuário próprio, banco cifrado e porta `8001`;
+- o bot (`zeca.service`) com usuário próprio, código em `/opt/zeca` que ele não consegue alterar, e segredos em `/etc/zeca/zeca.env`, lidos pelo systemd;
+- `deploy/deploy.sh` instala um commit em `/opt/zeca`.
+
+O passo a passo, a atualização do código, do Node e do zkool, e a solução de problemas estão em [`deploy/DEPLOY.md`](deploy/DEPLOY.md).
+
+---
+
 ## Usando um zkool-graphql compartilhado com outro serviço.
+
+**Recomendado: não compartilhe.** Um zkool só do ZECA (seção acima) evita os dois riscos abaixo.
 
 O zkool é multi-conta, então o ZECA pode dividir o servidor com outro serviço. Duas regras:
 
 - **Deixe `ZKOOL_ACCOUNT_ID` vazio na primeira execução.** O ZECA importa a UFVK, recebe o id da conta nova e o guarda no banco local. Confira no log que o id não é o da conta do outro serviço. Colocar `ZKOOL_ACCOUNT_ID=1` num servidor compartilhado pode fazer o ZECA ler a carteira do outro serviço e publicar os memos dela.
 - **Não compartilhe uma instância que guarde seed ou chave de gasto.** A API do zkool não isola contas. O ZECA processa conteúdo de remetentes anônimos; se ele for comprometido, o atacante ganha acesso a tudo que está naquele zkool. Nesse caso, suba uma segunda instância em outra porta (por exemplo `-p 127.0.0.1:8001:8000`), com volume de dados próprio, e aponte o `GQL_URL` para ela.
+
+O id da conta vale só para o zkool em que foi criada. Se o id salvo (ou o de `ZKOOL_ACCOUNT_ID`) não existir no zkool de `GQL_URL`, o bot para com uma mensagem clara, em vez de importar a UFVK de novo. Para trocar de zkool, veja "Trocar de zkool" em `deploy/DEPLOY.md`.
 
 ---
 

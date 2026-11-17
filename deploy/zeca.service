@@ -1,0 +1,65 @@
+# /etc/systemd/system/zeca.service
+# Bot do ZECA, isolado do usuário pac (que roda o LiveZEC).
+#
+# - usuário de sistema próprio (zeca);
+# - código em /opt/zeca, dono root: o bot lê, mas não altera (deploy/deploy.sh);
+# - dados em /var/lib/zeca (banco do bot) e /var/log/zeca (bot.log), só do zeca;
+# - segredos em /etc/zeca/zeca.env (root, 600): o systemd lê o arquivo antes de
+#   trocar para o usuário zeca, então o bot não consegue ler o arquivo, só as
+#   variáveis do próprio processo;
+# - Node oficial, dono root, em /usr/local/lib/nodejs/current.
+#
+# Variáveis de /etc/zeca/zeca.env sobrescrevem as Environment= abaixo: lá,
+# BOT_DB_PATH e LOG_FILE devem apontar para /var/lib/zeca e /var/log/zeca.
+[Unit]
+Description=ZECA bot (Discord)
+After=network-online.target zkool-zeca.service
+Wants=network-online.target zkool-zeca.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=zeca
+Group=zeca
+WorkingDirectory=/opt/zeca
+Environment=NODE_ENV=production
+Environment=BOT_DB_PATH=/var/lib/zeca/database.sqlite
+Environment=LOG_FILE=/var/log/zeca/bot.log
+EnvironmentFile=/etc/zeca/zeca.env
+ExecStart=/usr/local/lib/nodejs/current/bin/node /opt/zeca/index.js
+StateDirectory=zeca
+StateDirectoryMode=0700
+LogsDirectory=zeca
+LogsDirectoryMode=0700
+Restart=on-failure
+RestartSec=10s
+# O bot trata SIGTERM: fecha o Discord e o banco.
+TimeoutStopSec=15s
+MemoryMax=400M
+UMask=0077
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectProc=invisible
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

@@ -6,6 +6,7 @@ const { registerSecret, sanitizeMemo, assertSafeEndpoint } = require('./lib/secu
 const DiscordEngine = require('./engines/discord.engine');
 const { sequelize, Transaction, getSetting, setSetting, init } = require('./db');
 const { ZkoolClient } = require('./zkool.client');
+const { resolveAccountId } = require('./lib/account');
 
 // ---------- Configuração ----------
 const int = (v, d) => (Number.isFinite(parseInt(v, 10)) ? parseInt(v, 10) : d);
@@ -23,6 +24,9 @@ const cfg = {
     showValue: process.env.DEFAULT_SHOW_VALUE === 'true',
     stripAddresses: process.env.STRIP_ADDRESSES_FROM_MEMO !== 'false',
     maxPostsPerCycle: Math.max(int(process.env.MAX_POSTS_PER_CYCLE, 10), 1),
+    // Sem timeout, um zkool que não responde segura o bot indefinidamente.
+    gqlTimeoutMs: Math.max(int(process.env.GQL_TIMEOUT_MS, 30000), 1000),
+    gqlSyncTimeoutMs: Math.max(int(process.env.GQL_SYNC_TIMEOUT_MS, 120000), 5000),
 };
 
 registerSecret(cfg.vk);
@@ -56,25 +60,6 @@ async function broadcast(message, value, txid) {
         if (r.status === 'rejected') log.error(`[BROADCAST] ${engines[i].constructor.name} falhou em ${txid}: ${r.reason?.message}`);
     });
     return results.some(r => r.status === 'fulfilled');
-}
-
-// ---------- Conta no zkool ----------
-async function resolveAccountId() {
-    // 1) override explícito (instalações existentes: normalmente 1)
-    if (cfg.accountIdOverride) return cfg.accountIdOverride;
-
-    // 2) id já persistido pelo bot
-    const saved = int(await getSetting('zkoolAccountId'), null);
-    if (saved) return saved;
-
-    // 3) primeira execução: importa a UFVK e guarda o id devolvido
-    const id = await zkool.createNewAccount(cfg.vk, 0, cfg.birthHeight, 'ZecaMonitor');
-    if (!id) {
-        throw new Error('createAccount não retornou um id. Defina ZKOOL_ACCOUNT_ID no .env com o id da conta no zkool.');
-    }
-    await setSetting('zkoolAccountId', id);
-    log.info(`Conta UFVK importada no zkool (id ${id}).`);
-    return id;
 }
 
 // ---------- Memo ----------
@@ -177,10 +162,15 @@ process.on('unhandledRejection', (r) => log.error(`[UNHANDLED] ${r?.message || r
         await init();
         log.info('Banco de dados local pronto.');
 
-        zkool = new ZkoolClient(cfg.gqlUrl, { authToken: cfg.gqlToken, logger: log });
+        zkool = new ZkoolClient(cfg.gqlUrl, {
+            authToken: cfg.gqlToken,
+            timeoutMs: cfg.gqlTimeoutMs,
+            syncTimeoutMs: cfg.gqlSyncTimeoutMs,
+            logger: log,
+        });
         await zkool.init();
 
-        zkool.accountId = await resolveAccountId();
+        zkool.accountId = await resolveAccountId({ zkool, cfg, getSetting, setSetting, log });
         zkool.spawnSyncTask();
 
         const addressData = await zkool.getAddress();

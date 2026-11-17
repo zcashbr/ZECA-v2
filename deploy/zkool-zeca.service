@@ -1,0 +1,56 @@
+# /etc/systemd/system/zkool-zeca.service
+# Zkool exclusivo do ZECA (porta 8001), separado do zkool do LiveZEC (8000).
+#
+# Por que separar: a API do zkool não isola contas. O ZECA processa memos de
+# remetentes anônimos; se for comprometido, não pode alcançar as viewing keys
+# de outro serviço. Dois syncs no mesmo zkool também atrapalhavam um ao outro.
+#
+# - usuário de sistema próprio (zkool-zeca), banco em /var/lib/zkool-zeca;
+# - banco cifrado: a senha fica em /etc/zkool-zeca/db-password (root, 600) e é
+#   entregue pelo systemd só para este serviço (LoadCredential, %d);
+# - binário: o mesmo link do zkool do LiveZEC (/usr/local/bin/zkool_graphql),
+#   dono root. Ao trocar a versão do link, reinicie os dois serviços.
+[Unit]
+Description=Zkool GraphQL Backend (ZECA)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=zkool-zeca
+Group=zkool-zeca
+StateDirectory=zkool-zeca
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/zkool-zeca
+Environment=HOME=/var/lib/zkool-zeca
+LoadCredential=db-password:/etc/zkool-zeca/db-password
+ExecStart=/usr/local/bin/zkool_graphql --bind-address 127.0.0.1 --port 8001 --db-path /var/lib/zkool-zeca/zkool.db --db-password-file %d/db-password --allow-unauthenticated
+Restart=always
+RestartSec=5s
+TimeoutStopSec=20s
+MemoryMax=1G
+UMask=0077
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/zkool-zeca
+ProtectProc=invisible
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
